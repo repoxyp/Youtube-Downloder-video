@@ -21,7 +21,7 @@ class YouTubeDownloader:
         """Find and return the cookies file path"""
         possible_paths = [
             'cookies.txt',
-            'cookies/cookies.txt',
+            'cookies/cookies.txt', 
             os.path.expanduser('~/.config/yt-dlp/cookies.txt'),
             '/etc/yt-dlp/cookies.txt'
         ]
@@ -54,19 +54,10 @@ class YouTubeDownloader:
             # Fix YouTube Shorts URLs
             url = self.fix_shorts_url(url)
             
-            # Special handling for Facebook and Instagram
+            # Get extractor options
             ydl_opts = self.get_extractor_opts(url)
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Validate URL first
-                try:
-                    ie_result = ydl.extract_info(url, download=False, process=False)
-                    if not ie_result:
-                        return None
-                except Exception as e:
-                    logger.warning(f"URL validation warning: {e}")
-                    # Continue anyway, some platforms might still work
-                
                 # Get full info with processing
                 info = ydl.extract_info(url, download=False)
                 
@@ -99,6 +90,7 @@ class YouTubeDownloader:
         opts = {
             'quiet': True,
             'no_warnings': False,
+            'extract_flat': False,
         }
         
         # Add cookies if available
@@ -106,8 +98,20 @@ class YouTubeDownloader:
             opts['cookiefile'] = self.cookies_file
             logger.info(f"Using cookies file: {self.cookies_file}")
         
+        # YouTube specific options - 4K support enabled
+        if 'youtube.com' in url or 'youtu.be' in url:
+            opts.update({
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web', 'android', 'ios'],  # Multiple clients for 4K
+                        'player_skip': ['configs'],
+                        'formats': ['best', '4k', '1080p', '720p', '480p', '360p']  # Explicitly request 4K
+                    }
+                }
+            })
+        
         # Facebook specific options
-        if 'facebook.com' in url or 'fb.com' in url:
+        elif 'facebook.com' in url or 'fb.com' in url:
             opts.update({
                 'extractor_args': {
                     'facebook': {
@@ -126,21 +130,10 @@ class YouTubeDownloader:
                 }
             })
         
-        # YouTube specific options with cookies
-        elif 'youtube.com' in url or 'youtu.be' in url:
-            opts.update({
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web'],
-                        'player_skip': ['configs', 'webpage']
-                    }
-                }
-            })
-        
         return opts
     
     def extract_formats(self, info):
-        """Extract and organize all available formats"""
+        """Extract and organize all available formats with 4K support"""
         formats = []
         
         # Add best MP3 audio format
@@ -159,19 +152,45 @@ class YouTubeDownloader:
             if format_info and self.is_valid_format(format_info):
                 formats.append(format_info)
         
-        # Add combined formats for high quality videos
+        # Add combined formats for ALL quality videos including 4K
         combined_formats = self.create_combined_formats(info.get('formats', []))
         formats.extend(combined_formats)
         
-        # Add best video format
-        formats.append({
-            'format_id': 'best',
-            'ext': 'mp4',
-            'resolution': 'BEST (Auto Select)',
-            'filesize': 'Unknown',
-            'type': 'video+audio',
-            'quality': 10000
-        })
+        # Add auto formats
+        formats.extend([
+            {
+                'format_id': 'best',
+                'ext': 'mp4',
+                'resolution': 'BEST (Auto Select)',
+                'filesize': 'Unknown',
+                'type': 'video+audio',
+                'quality': 10000
+            },
+            {
+                'format_id': 'bestvideo+bestaudio',
+                'ext': 'mp4',
+                'resolution': 'BEST VIDEO + BEST AUDIO (4K Ready)',
+                'filesize': 'Unknown',
+                'type': 'video+audio',
+                'quality': 15000
+            },
+            {
+                'format_id': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+                'ext': 'mp4',
+                'resolution': '1080p MAX (Auto Merge)',
+                'filesize': 'Unknown',
+                'type': 'video+audio',
+                'quality': 1080
+            },
+            {
+                'format_id': 'bestvideo[height<=2160]+bestaudio/best[height<=2160]',
+                'ext': 'mp4',
+                'resolution': '4K MAX (Auto Merge)',
+                'filesize': 'Unknown',
+                'type': 'video+audio',
+                'quality': 2160
+            }
+        ])
         
         # Remove duplicates and sort
         return self.deduplicate_and_sort_formats(formats)
@@ -185,6 +204,13 @@ class YouTubeDownloader:
         # Skip storyboard formats
         if format_dict.get('format_id', '').startswith('sb'):
             return None
+        
+        # Detect 4K formats
+        height = format_dict.get('height', 0)
+        if height >= 2160:
+            format_note = f"{height}p (4K)"
+        elif height >= 1440:
+            format_note = f"{height}p (2K)"
         
         return {
             'format_id': format_dict['format_id'],
@@ -224,26 +250,38 @@ class YouTubeDownloader:
         return True
     
     def create_combined_formats(self, all_formats):
-        """Create combined formats for high quality video+audio"""
+        """Create combined formats for ALL quality videos including 4K"""
         combined = []
         
         # Find best video-only and audio-only formats
         video_formats = [f for f in all_formats if f.get('vcodec') != 'none' and f.get('acodec') == 'none']
         audio_formats = [f for f in all_formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
         
-        # Sort video formats by quality
+        # Sort video formats by quality (highest first)
         video_formats.sort(key=lambda x: x.get('height', 0), reverse=True)
         
-        for video_fmt in video_formats[:5]:  # Top 5 video formats
-            if video_fmt.get('height', 0) >= 360:
+        # Create combined formats for all high-quality video formats
+        for video_fmt in video_formats:
+            height = video_fmt.get('height', 0)
+            if height >= 360:  # Include all formats from 360p to 4K
                 combined.append({
                     'format_id': f"{video_fmt['format_id']}+bestaudio",
                     'ext': 'mp4',
-                    'resolution': f"{video_fmt.get('height', 0)}p (+AUDIO)",
+                    'resolution': f"{height}p (+AUDIO)",
                     'filesize': 'Unknown',
                     'type': 'video+audio',
-                    'quality': video_fmt.get('height', 0) + 1000
+                    'quality': height + 1000
                 })
+        
+        # Special 4K combined format
+        combined.append({
+            'format_id': 'bestvideo[height>=2160]+bestaudio/best[height>=2160]',
+            'ext': 'mp4',
+            'resolution': '4K ULTRA (+AUDIO)',
+            'filesize': 'Unknown',
+            'type': 'video+audio',
+            'quality': 5000
+        })
         
         return combined
     
@@ -258,11 +296,8 @@ class YouTubeDownloader:
                 seen.add(key)
                 unique_formats.append(f)
         
-        # Sort by type and quality
-        unique_formats.sort(key=lambda x: (
-            0 if 'video' in x['type'] else 1 if 'audio' in x['type'] else 2,
-            x['quality']
-        ), reverse=True)
+        # Sort by quality (highest first)
+        unique_formats.sort(key=lambda x: x['quality'], reverse=True)
         
         return unique_formats
     
@@ -271,11 +306,19 @@ class YouTubeDownloader:
         resolution_map = {
             '144P': 144, '240P': 240, '360P': 360, '480P': 480,
             '720P': 720, '1080P': 1080, '1440P': 1440, '2160P': 2160,
-            '4320P': 4320, 'BEST': 10000, 'N/A': 0, 'MP3 AUDIO (192KBPS)': 1
+            '4320P': 4320, '4K': 2160, '2K': 1440,
+            'BEST': 10000, 'N/A': 0, 'MP3 AUDIO (192KBPS)': 1
         }
         
         # Try to get from resolution map
-        quality = resolution_map.get(resolution.upper(), 0)
+        resolution_upper = resolution.upper()
+        quality = resolution_map.get(resolution_upper, 0)
+        
+        # Extract from resolution string like "2160p"
+        if quality == 0:
+            match = re.search(r'(\d+)p', resolution_upper)
+            if match:
+                quality = int(match.group(1))
         
         # If not found, try to extract from height
         if quality == 0 and format_dict and format_dict.get('height'):
@@ -300,7 +343,6 @@ class YouTubeDownloader:
         if not size_bytes:
             return "Unknown"
         
-        # Fix: Handle float formatting properly
         try:
             size_float = float(size_bytes)
             for unit in ['B', 'KB', 'MB', 'GB']:
@@ -352,7 +394,7 @@ class YouTubeDownloader:
                 progress_callback(progress_info)
     
     def download(self, url, format_id, download_type, downloads_folder, progress_callback=None):
-        """Download video or audio"""
+        """Download video or audio with 4K and auto-merge support"""
         try:
             # Fix YouTube Shorts URLs
             url = self.fix_shorts_url(url)
@@ -367,10 +409,8 @@ class YouTubeDownloader:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
                 
-                # FIX: Handle MP3 conversion properly
+                # Handle MP3 conversion
                 if download_type == 'audio' or format_id == 'mp3':
-                    # For MP3, yt-dlp automatically converts and renames the file
-                    # So we need to find the actual MP3 file
                     base_name = os.path.splitext(filename)[0]
                     mp3_file = base_name + '.mp3'
                     
@@ -378,16 +418,13 @@ class YouTubeDownloader:
                         logger.info(f"MP3 file created: {mp3_file}")
                         return mp3_file
                     else:
-                        # If MP3 conversion failed, return the original audio file
                         logger.warning(f"MP3 conversion may have failed, returning original file: {filename}")
                         return filename
                 else:
-                    # For video files, return the downloaded file
                     if os.path.exists(filename):
                         logger.info(f"Video file created: {filename}")
                         return filename
                     else:
-                        # Try to find the file with different extension
                         base_name = os.path.splitext(filename)[0]
                         for ext in ['.mp4', '.mkv', '.webm', '.m4a']:
                             possible_file = base_name + ext
@@ -408,7 +445,7 @@ class YouTubeDownloader:
             return None
     
     def get_download_options(self, download_type, format_id, downloads_folder, progress_callback):
-        """Get appropriate download options"""
+        """Get appropriate download options with 4K and merge support"""
         base_opts = {
             'outtmpl': os.path.join(downloads_folder, '%(title)s.%(ext)s'),
             'progress_hooks': [lambda d: self.progress_hook(d, progress_callback)],
@@ -416,12 +453,12 @@ class YouTubeDownloader:
             'no_warnings': False,
         }
         
-        # Add platform-specific options with cookies
+        # Add platform-specific options
         url_specific_opts = self.get_extractor_opts('')
         base_opts.update(url_specific_opts)
         
         if download_type == 'audio' or format_id == 'mp3':
-            # Audio download with MP3 conversion
+            # Audio download
             base_opts.update({
                 'format': 'bestaudio/best',
                 'postprocessors': [{
@@ -430,22 +467,15 @@ class YouTubeDownloader:
                     'preferredquality': '192',
                 }],
             })
-        elif '+' in format_id:
-            # Combined format (video + audio) - ensure proper merging
-            base_opts.update({
-                'format': format_id,
-                'merge_output_format': 'mp4',
-            })
-        elif format_id == 'best':
-            # Best quality auto selection
-            base_opts.update({
-                'format': 'bestvideo+bestaudio/best',
-                'merge_output_format': 'mp4',
-            })
         else:
-            # Specific format
+            # Video download with auto-merge for 4K
             base_opts.update({
                 'format': format_id,
+                'merge_output_format': 'mp4',  # Auto merge to mp4
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }],
             })
         
         return base_opts
