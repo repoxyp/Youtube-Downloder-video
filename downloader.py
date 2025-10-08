@@ -15,6 +15,24 @@ class YouTubeDownloader:
             'instagram.com', 'fb.com', 'facebook.com', 'www.tiktok.com',
             'www.instagram.com', 'www.facebook.com'
         ]
+        self.cookies_file = self.get_cookies_file()
+    
+    def get_cookies_file(self):
+        """Find and return the cookies file path"""
+        possible_paths = [
+            'cookies.txt',
+            'cookies/cookies.txt',
+            os.path.expanduser('~/.config/yt-dlp/cookies.txt'),
+            '/etc/yt-dlp/cookies.txt'
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                logger.info(f"Found cookies file: {path}")
+                return path
+        
+        logger.info("No cookies file found, proceeding without cookies")
+        return None
     
     def fix_shorts_url(self, url):
         """Fix YouTube Shorts URLs to regular watch URLs"""
@@ -83,12 +101,17 @@ class YouTubeDownloader:
             'no_warnings': False,
         }
         
-        # Facebook specific options - FIXED: Remove float formatting issues
+        # Add cookies if available
+        if self.cookies_file:
+            opts['cookiefile'] = self.cookies_file
+            logger.info(f"Using cookies file: {self.cookies_file}")
+        
+        # Facebook specific options
         if 'facebook.com' in url or 'fb.com' in url:
             opts.update({
                 'extractor_args': {
                     'facebook': {
-                        'credentials': None  # Remove credentials to avoid float formatting issues
+                        'credentials': None
                     }
                 }
             })
@@ -99,6 +122,17 @@ class YouTubeDownloader:
                 'extractor_args': {
                     'instagram': {
                         'shortcode_match': True
+                    }
+                }
+            })
+        
+        # YouTube specific options with cookies
+        elif 'youtube.com' in url or 'youtu.be' in url:
+            opts.update({
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web'],
+                        'player_skip': ['configs', 'webpage']
                     }
                 }
             })
@@ -305,7 +339,7 @@ class YouTubeDownloader:
                 
         elif d['status'] == 'finished':
             progress_info = {
-                'status': 'completed',  # Changed from 'processing' to 'completed'
+                'status': 'completed',
                 'percent': 100,
                 'speed': '0 MB/s',
                 'eta': '0 seconds',
@@ -382,7 +416,7 @@ class YouTubeDownloader:
             'no_warnings': False,
         }
         
-        # Add platform-specific options (FIXED: Remove problematic Facebook credentials)
+        # Add platform-specific options with cookies
         url_specific_opts = self.get_extractor_opts('')
         base_opts.update(url_specific_opts)
         
